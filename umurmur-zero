@@ -1,0 +1,73 @@
+#!/bin/sh
+# libpcreposix only, jemalloc, libatomic
+# PC Files???
+
+set -xe
+hash tar gzip make cmake nproc patch
+
+_CC=$(readlink -f $(which ${CC:-cc}))
+
+echo ___COMPILER___
+$_CC --version
+
+export CFLAGS='-march=native -O3 -pipe'
+
+echo Checking whether the compiler supports “-fstack-protector-strong”…
+echo 'int main(){}' | $_CC -fsyntax-only -fstack-protector-strong -xc - && CFLAGS="$CFLAGS -fstack-protector-strong"
+echo
+
+echo Detecting which compiler is under use…
+case $(basename $_CC) in
+	clang*)_CC=clang && CFLAGS="$CFLAGS -Wno-unused-command-line-argument";;
+	*gcc*) _CC=gcc   ;; # Asterix at start: x86_64-linux-gnu-gcc-8
+	*) echo Unsupported compiler \`$_CC\' && false
+esac
+
+_root=$PWD
+
+cd deps
+
+# Gathering all the dependencies
+# EPOLLEXCLUSIVE not available : Linux4.5 / glibc2.24
+# reuseport is available : Linux3.9+
+
+# MUSL
+cd musl
+#sed -i 's|-std=c99|-std=c11|' Makefile
+./configure --prefix=/opt --enable-wrapper=$_CC #--enable-warnings
+make -j`nproc` --silent install
+cd -
+
+# Headers are required for LibreSSL & nginx
+cd kernel-headers
+make -j`nproc` ARCH=x86_64 DESTDIR=/opt prefix= install
+cd -
+
+#export CC=$_dir/bin/musl-$_CC LDFLAGS=-static
+export CC=/opt/bin/musl-$_CC LDFLAGS=-static
+
+#cd jemalloc
+#./configure --prefix=/opt --disable-cxx
+#make -j`nproc` install_lib_static
+#cd -
+
+# LibreSSL
+# LibreSSL from Git requires automake, autoconf, etc.
+# https://github.com/libressl-portable/portable/tree/master#prerequisites-when-building-from-a-git-checkout
+tar xf libressl-*.tar.gz
+cd libressl-*
+rm include/tls.h
+cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt
+make -j`nproc` ssl crypto
+cmake -P include/cmake_install.cmake
+cmake -P crypto/cmake_install.cmake
+cmake -P ssl/cmake_install.cmake
+cd -
+
+# μMurmur
+cd umurmur
+cmake -DSSL=openssl -DCMAKE_INSTALL_PREFIX=/opt
+make -j`nproc` install
+cd -
+
+tar czf $_root/umurmur.tar.gz -C/opt nginx
